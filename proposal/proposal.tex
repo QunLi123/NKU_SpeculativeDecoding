@@ -1,0 +1,155 @@
+\documentclass[11pt]{article}
+
+% preprint = non-anonymous, page numbers shown (suitable for course submission)
+\usepackage[preprint]{acl}
+
+\usepackage{latexsym}
+\usepackage[scheme=plain,UTF8]{ctex}
+\usepackage{microtype}
+\usepackage{inconsolata}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\setlength\titlebox{5cm}
+
+\title{Speeding Up Autoregressive LLM Generation via Speculative Decoding:\\[1mm]
+Principle, Self-Implementation, and Evaluation}
+
+\author{
+  Zou Bowen (邹博闻) \and Cui Di (崔迪) \\
+  College of Computer Science, Nankai University\\
+  Team: 创造性AI \qquad \texttt{2312251@mail.nankai.edu.cn} \qquad \texttt{19837008208@163.com}
+}
+
+\date{October 12, 2026}
+
+\begin{document}
+\maketitle
+
+\section{Background and Motivation}
+Autoregressive language models generate text one token at a time: each new token
+requires a full forward pass over the entire token history. For large models this
+step is \emph{memory-bandwidth bound}---reading the weight matrices from memory each
+step dominates compute---which limits throughput to tens of tokens per second on a
+single accelerator.
+
+\textbf{Speculative decoding} \citep{leviathan2023fast, chen2023accelerating}
+reduces the number of expensive target-model forward passes without changing the
+output distribution. A cheap \emph{draft model} proposes $K$ speculative tokens;
+the target model verifies them in a \emph{single} parallel forward pass, and
+tokens are accepted probabilistically so that the final distribution is identical
+to vanilla autoregressive sampling. Because small models agree with large ones on
+most frequent short tokens---a statistical property of natural-language token
+distributions---most drafts are accepted, yielding often 2--3$\times$ speedups
+\emph{at zero quality cost}.
+
+Rather than merely \emph{using} an existing engine (explicitly forbidden by the
+project rules), this project implements the speculative-decoding pipeline
+\emph{from scratch} over an open-source LLM, rigorously verifies the ``lossless''
+claim, and delivers a runnable interactive demo.
+
+\section{Problem Definition and Research Questions}
+Given a target LM $p$, a draft LM $q$, a prompt, and draft length $K$, we implement
+a speculative decoding loop whose generated distribution equals vanilla
+autoregressive decoding. We ask:
+
+\begin{enumerate}[label=RQ\arabic*.]
+\item Can a self-implemented engine reproduce the claimed lossless speedup (exact
+      output preservation) in both greedy and sampling modes?
+\item How do drafting strategies (small LM vs.~n-gram prompt lookup) and
+      hyper-parameters ($K$, temperature) affect throughput, acceptance rate, and
+      oracle-like quality?
+\item How do gains scale with the draft/target model pair, sequence length, and
+      serving batch size?
+\end{enumerate}
+
+\section{Technical Approach and System Design}
+\paragraph{Core modules (all self-implemented).}
+\begin{enumerate}[label=\arabic*.]
+\item \textbf{Decoder engine}: KV-cache autoregressive generation, greedy and
+      sampling modes (the baseline).
+\item \textbf{Draft module}: $K$-step continuous sampling from a small draft LM;
+      plus an n-gram prompt-lookup variant that proposes tokens copied from the
+      prompt (no second model needed) \citep{nvidia2023promptlookup}.
+\item \textbf{Validator}: batch forward pass of the target model over the $K$
+      proposed positions; per-position acceptance with probability
+      $\min\!\bigl(1,\; p(\cdot)/q(\cdot)\bigr)$, resampling otherwise.
+\item \textbf{Eval harness}: throughput, latency, acceptance rate, and
+      distribution-preservation metrics.
+\end{enumerate}
+
+\paragraph{Architecture and implementation.}
+The engine is written in PyTorch and validated first on CPU (numerical correctness
+and unit tests), then deployed on the in-lab Ascend 950 device which we already
+have running an open-source inference stack; the speculative loop itself is
+independent of vendor kernels. We deliberately \emph{do not} use the speculative
+decoding built into vLLM or similar frameworks; the baseline is the same engine
+with drafting disabled. A command-line runner and a lightweight web demo expose a
+toggle between vanilla and speculative decoding with live tokens/s and acceptance
+stats.
+
+\section{Evaluation Plan}
+\textbf{Setup.} Target models: Qwen3-8B (primary) and Qwen2.5-7B (generality).
+Drafts: Qwen3-0.6B, Qwen2.5-0.5B, and n-gram prompt lookup. A fixed prompt set of
+20--50 samples across domains (writing, code, news).
+
+\textbf{Metrics.}
+\begin{enumerate}[label=\arabic*.]
+\item \emph{Speed:} end-to-end speedup vs.~baseline, tokens/s, time-to-first-token.
+\item \emph{Acceptance:} accepted/proposed ratio, drafts "all-correct" fraction.
+\item \emph{Quality preservation (the key claim):} greedy outputs must match
+      vanilla \emph{token-by-token}; sampling outputs measured by KL divergence /
+      perplexity to the vanilla distribution.
+\end{enumerate}
+
+\textbf{Ablations.} Draft length $K \in \{1,\dots,8\}$; draft strength (0.6B vs.~0.5B
+vs.~n-gram); temperature; batch size.
+
+\section{Expected Outcomes}
+\begin{enumerate}[label=\arabic*.]
+\item A clean, self-implemented, reproducible speculative-decoding engine with unit
+      tests and documented code.
+\item Quantitative lossless speedups with systematic ablations and acceptance-rate
+      analysis, reported against an honest baseline.
+\item A runnable interactive demo (web), the 8-page ACL-style final report, slides,
+      demo video, and a source archive with README.
+\end{enumerate}
+
+\section{Project Timeline}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llp{5.6cm}}
+\toprule
+\textbf{Phase} & \textbf{Dates} & \textbf{Deliverables} \\
+\midrule
+Phase 1 & 2026/10/12 & Project proposal (this document, 2pp) \\
+Phase 2 & 10/12--10/31 & Engine implemented; first speedup measured on CPU/NPU \\
+Phase 3 & 11/01--11/20 & Systematic experiments and ablations; figures \\
+Phase 4 & 11/21--11/30 & Interactive demo; midterm report (2--3pp) + slides \\
+Phase 5 & 12/01--final & 8-page ACL final report, final slides, demo video, code zip \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Team Members and Responsibilities}
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{llp{6.2cm}}
+\toprule
+\textbf{Member} & \textbf{Role} & \textbf{Responsibilities} \\
+\midrule
+Zou Bowen (2312251) & Developer (Lead) & Core implementation of the
+speculative-decoding engine and verification loop (Phase 2); experiment design,
+coding and data analysis \\
+Cui Di (2412439) & Reviewer, writer \& presenter & Literature collection and
+reading (related work); final 8-page ACL-style report; presentation slides and
+demo presentation \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\bibliography{custom}
+
+\end{document}
